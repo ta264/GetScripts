@@ -1,23 +1,14 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 ##############################################################################
 ### NZBGET POST-PROCESSING SCRIPT                                          ###
 
-# Extract archives using password list.
-#
-# This script will attempt to use all passwords from a supplied list to extract a password.
+# Extract archives
 #
 # NOTE: This script requires Python to be installed on your system.
 
 ##############################################################################
 ### OPTIONS                                                                ###
-
-# Password File.
-#
-# Enter the Path to a plain-text file with a single password on each line.
-# Each Password will be used to attempt extraction.
-#PasswordFile="/share/Download/password.txt"
-
 
 ## Windows
 
@@ -101,7 +92,6 @@ if not os.path.isdir(os.environ['NZBPP_DIRECTORY']):
 if status == 1:
     sys.exit(NZBGET_POSTPROCESS_NONE)
 
-PASSWORDSFILE = os.environ["NZBPO_PASSWORDFILE"]
 SEVENZIP = os.environ["NZBPO_SEVENZIP"]
 ARCHIVE = [re.compile('.r\d{2}$', re.I),
                     re.compile('.part\d+.rar$', re.I),
@@ -120,9 +110,9 @@ if platform.system() == 'Windows':
 else:
     required_cmds = ["unrar", "unzip", "tar", "unxz", "unlzma", "7zr", "bunzip2"]
     EXTRACT_COMMANDS = {
-    ".rar": ["unrar", "x", "-o+", "-y"],
+        ".rar": ["unrar", "x", "-o+", "-y", "-ai"],
         ".tar": ["tar", "-xf"],
-        ".zip": ["unzip"],
+        ".zip": ["unzip", "-n"],
         ".tar.gz": ["tar", "-xzf"], ".tgz": ["tar", "-xzf"],
         ".tar.bz2": ["tar", "-xjf"], ".tbz": ["tar", "-xjf"],
         ".tar.lzma": ["tar", "--lzma", "-xf"], ".tlz": ["tar", "--lzma", "-xf"],
@@ -205,12 +195,6 @@ def extract(directory, filePath):
             return True
 
     print(("Extracting %s" % (filePath)))
-    if PASSWORDSFILE != "" and os.path.isfile(PASSWORDSFILE):
-        passwords = [line.strip() for line in open(os.path.normpath(PASSWORDSFILE))]
-        print(("Found %s passwords to try" % (len(passwords))))
-    else:
-        passwords = []
-        print(("Could not find password file %s" % (PASSWORDSFILE)))
 
     pwd = os.getcwd()  # Get our Present Working Directory
     os.chdir(directory)  # Not all unpack commands accept full paths, so just extract into this directory
@@ -222,34 +206,21 @@ def extract(directory, filePath):
         if platform.system() != 'Windows':
             cmd = NICENESS + cmd
         cmd2 = cmd
-        cmd2.append("-p-")  # don't prompt for password.
+
+        print(("Executing %s" % (cmd2)))
         p = Popen(cmd2, stdout=devnull, stderr=devnull)  # should extract files fine.
         res = p.wait()
 
         if res == 0:
             print(("Extraction was successful for %s" % (filePath)))
             success = 1
-        elif len(passwords) > 0:
-            for password in passwords:
-                print(("Attempting to extract with password [%s]" % password))
-                if password == "":  # if edited in windows or otherwise if blank lines.
-                    continue
-                cmd2 = cmd
-                #append password here.
-                passcmd = "-p" + password
-                cmd2.append(passcmd)
-                #print cmd2
-                p = Popen(cmd2, stdout=devnull, stderr=devnull)  # should extract files fine.
-                res = p.wait()
-                if res == 0:
-                    print(("Extraction was successful for %s using password: %s" % (
-                    filePath, password)))
-                    success = 1
-                    break
-                else:
-                    print(("Extraction failed for %s using password: %s" % (
-                    filePath, password)))
-                    continue
+
+            cleanup = os.environ['NZBOP_UNPACKCLEANUPDISK']
+            print("Cleanup: %s" % cleanup)
+            if cleanup == "yes":
+                print("Deleting: %s" % filePath)
+                os.remove(filePath)
+
     except:
         print(("Extraction failed for %s. Could not call command %s" % (filePath, cmd)))
         devnull.close()
@@ -266,16 +237,47 @@ def extract(directory, filePath):
         print(("Extraction failed for %s. Result was %s" % (filePath, res)))
         return False
 
-failed = 0
-for dirpath, dirnames, filenames in os.walk(os.environ['NZBPP_DIRECTORY']):
-    for file in filenames:
-        filePath = os.path.join(dirpath, file)
-        fileName, fileExtension = os.path.splitext(file)
-        #if fileExtension in ARCHIVE:  # If the file is an archive
-        if extract(os.environ['NZBPP_DIRECTORY'], filePath):
-            failed += 0
-        else:
-            failed += 1
+def walk(directory):
+    failed = 0
+    ppdir = os.environ['NZBPP_DIRECTORY']
+    for dirpath, dirnames, filenames in os.walk(directory):
+
+        print("processing %s" % filenames)
+
+        # extract
+        for file in filenames:
+            print("found %s" % file)
+            filePath = os.path.join(dirpath, file)
+            if extract(ppdir, filePath):
+                failed += 0
+            else:
+                failed += 1
+
+        seen = dirnames + filenames
+        print("seen %s" % seen)
+
+        # Recurse into anything created by above
+        recurse = True
+        while recurse:
+            recurse = False
+            with os.scandir(dirpath) as it:
+                for item in it:
+                    if not item.name in seen:
+                        seen.append(item.name)
+                        print("seen is now %s" % seen)
+                        
+                        recurse = True
+
+                        if item.is_file():
+                            extract(ppdir, os.path.join(dirpath, item.name))
+                        elif item.is_dir():
+                            towalk = os.path.join(ppdir, dirpath, item.name)
+                            print ("walking new file/directory %s" % towalk)
+                            failed += walk(towalk)
+
+    return failed
+
+failed = walk(os.environ['NZBPP_DIRECTORY'])
 
 if failed:
     sys.exit(NZBGET_POSTPROCESS_ERROR)
